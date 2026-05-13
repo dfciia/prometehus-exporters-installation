@@ -10,16 +10,16 @@ Install Node Exporter instantly using our installation script:
 
 ```bash
 # Install latest version
-curl -fsSL https://raw.githubusercontent.com/dfciia/prometehus-exporters-installation/main/install-node-exporter.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/dfciia/prometehus-exporters-installation/main/node-exporter/install-node-exporter.sh | sudo bash
 
 # Install specific version
-curl -fsSL https://raw.githubusercontent.com/dfciia/prometehus-exporters-installation/main/install-node-exporter.sh | sudo bash -s -- --version 1.7.0
+curl -fsSL https://raw.githubusercontent.com/dfciia/prometehus-exporters-installation/main/node-exporter/install-node-exporter.sh | sudo bash -s -- --version 1.7.0
 
 # Install with custom port
-curl -fsSL https://raw.githubusercontent.com/dfciia/prometehus-exporters-installation/main/install-node-exporter.sh | sudo bash -s -- --port 9101
+curl -fsSL https://raw.githubusercontent.com/dfciia/prometehus-exporters-installation/main/node-exporter/install-node-exporter.sh | sudo bash -s -- --port 9101
 
 # Uninstall
-curl -fsSL https://raw.githubusercontent.com/dfciia/prometehus-exporters-installation/main/install-node-exporter.sh | sudo bash -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/dfciia/prometehus-exporters-installation/main/node-exporter/install-node-exporter.sh | sudo bash -s -- --uninstall
 ```
 
 ### What the Script Does

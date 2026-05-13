@@ -3,9 +3,9 @@
 # Prometheus Node Exporter Installer
 # 
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/dfciia/prometehus-exporters-installation/main/install-node-exporter.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/dfciia/prometehus-exporters-installation/main/install-node-exporter.sh | bash -s -- --version 1.7.0
-#   curl -fsSL https://raw.githubusercontent.com/dfciia/prometehus-exporters-installation/main/install-node-exporter.sh | bash -s -- --uninstall
+#   curl -fsSL https://raw.githubusercontent.com/dfciia/prometehus-exporters-installation/main/node-exporter/install-node-exporter.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/dfciia/prometehus-exporters-installation/main/node-exporter/install-node-exporter.sh | bash -s -- --version 1.7.0
+#   curl -fsSL https://raw.githubusercontent.com/dfciia/prometehus-exporters-installation/main/node-exporter/install-node-exporter.sh | bash -s -- --uninstall
 #
 # Options:
 #   --version <version>   Install a specific version (default: latest)
