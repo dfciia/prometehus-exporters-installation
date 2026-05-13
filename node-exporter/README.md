@@ -5,7 +5,7 @@ One-line installation script for Prometheus Node Exporter on any Linux distribut
 ## Quick Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dfciia/prometehus-exporters-installation/main/install-node-exporter.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/dfciia/prometehus-exporters-installation/main/node-exporter/install-node-exporter.sh | sudo bash
 ```
 
 ## Features
