@@ -199,12 +199,14 @@ function Install-WindowsExporter {
     
     Write-Info "Installing Windows Exporter..."
     
-    # Build MSI arguments
+    # Build MSI arguments - simpler configuration to avoid startup issues
     $msiArgs = @(
         "/i"
         "`"$MsiPath`""
         "/qn"
         "/norestart"
+        "/l*v"
+        "`"$env:TEMP\windows_exporter_install.log`""
         "LISTEN_PORT=$Port"
     )
     
@@ -213,7 +215,8 @@ function Install-WindowsExporter {
         $msiArgs += "ENABLED_COLLECTORS=$Collectors"
     }
     
-    $msiArgs += "EXTRA_FLAGS=`"--log.format logger:eventlog?name=windows_exporter`""
+    # Note: Removed eventlog flag as it can cause startup issues
+    # The service will log to stdout/stderr by default
     
     Write-Info "Running: msiexec $($msiArgs -join ' ')"
     
@@ -229,7 +232,16 @@ function Install-WindowsExporter {
         return $true
     }
     else {
-        Write-Error "Installation failed with exit code: $($process.ExitCode)"
+        Write-Warning "MSI installation returned exit code: $($process.ExitCode)"
+        Write-Info "Checking install log at: $env:TEMP\windows_exporter_install.log"
+        
+        # Try to show relevant log entries
+        if (Test-Path "$env:TEMP\windows_exporter_install.log") {
+            $logContent = Get-Content "$env:TEMP\windows_exporter_install.log" -Tail 20
+            Write-Host "Last 20 lines of install log:" -ForegroundColor Yellow
+            $logContent | ForEach-Object { Write-Host "  $_" -ForegroundColor Gray }
+        }
+        
         return $false
     }
 }
@@ -249,21 +261,139 @@ function Start-ExporterService {
     Write-Info "Starting $ServiceName service..."
     
     if (Test-ServiceExists -Name $ServiceName) {
-        Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 2
-        
-        $service = Get-Service -Name $ServiceName
-        if ($service.Status -eq "Running") {
-            Write-Success "Service started successfully"
-            return $true
+        try {
+            Start-Service -Name $ServiceName -ErrorAction Stop
+            Start-Sleep -Seconds 3
+            
+            $service = Get-Service -Name $ServiceName
+            if ($service.Status -eq "Running") {
+                Write-Success "Service started successfully"
+                return $true
+            }
+            else {
+                Write-Warning "Service status: $($service.Status)"
+                return $false
+            }
         }
-        else {
-            Write-Warning "Service status: $($service.Status)"
+        catch {
+            Write-Warning "Failed to start service: $_"
+            
+            # Show diagnostic information
+            Write-Info "Diagnosing the issue..."
+            
+            # Check service configuration
+            $svcConfig = Get-WmiObject -Class Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
+            if ($svcConfig) {
+                Write-Host "  Service Path: $($svcConfig.PathName)" -ForegroundColor Gray
+                Write-Host "  Start Mode: $($svcConfig.StartMode)" -ForegroundColor Gray
+                Write-Host "  State: $($svcConfig.State)" -ForegroundColor Gray
+            }
+            
+            # Check if exe exists
+            $exePath = "C:\Program Files\windows_exporter\windows_exporter.exe"
+            if (Test-Path $exePath) {
+                Write-Host "  Executable exists: Yes" -ForegroundColor Gray
+            }
+            else {
+                Write-Host "  Executable exists: No - This is the problem!" -ForegroundColor Red
+            }
+            
+            # Check for port conflicts
+            $portInUse = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+            if ($portInUse) {
+                Write-Host "  Port $Port is already in use by PID: $($portInUse.OwningProcess)" -ForegroundColor Red
+            }
+            
+            # Try to get Windows Event Log errors
+            try {
+                $events = Get-EventLog -LogName Application -Source "windows_exporter" -Newest 5 -ErrorAction SilentlyContinue
+                if ($events) {
+                    Write-Host "  Recent Event Log entries:" -ForegroundColor Yellow
+                    $events | ForEach-Object { Write-Host "    $($_.Message)" -ForegroundColor Gray }
+                }
+            }
+            catch { }
+            
             return $false
         }
     }
     else {
-        Write-Warning "Service not found"
+        Write-Warning "Service not found - attempting manual service creation..."
+        return Install-ServiceManually
+    }
+}
+
+function Install-ServiceManually {
+    Write-Info "Creating service manually..."
+    
+    $exePath = "C:\Program Files\windows_exporter\windows_exporter.exe"
+    
+    # Check if exe exists, if not download it
+    if (-not (Test-Path $exePath)) {
+        Write-Warning "Executable not found, downloading..."
+        
+        $version = Get-LatestVersion
+        $arch = Get-Architecture
+        $downloadUrl = "https://github.com/$GitHubRepo/releases/download/v$version/windows_exporter-$version-$arch.exe"
+        
+        # Create directory
+        if (-not (Test-Path $InstallDir)) {
+            New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+        }
+        
+        # Download exe directly
+        Write-Info "Downloading from: $downloadUrl"
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $exePath -UseBasicParsing
+        $ProgressPreference = 'Continue'
+        
+        if (-not (Test-Path $exePath)) {
+            Write-Error "Failed to download executable"
+            return $false
+        }
+        Write-Success "Downloaded executable"
+    }
+    
+    # Remove existing service if it exists but is broken
+    $existingService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($existingService) {
+        Write-Info "Removing broken service..."
+        Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+        sc.exe delete $ServiceName | Out-Null
+        Start-Sleep -Seconds 2
+    }
+    
+    # Create new service with simple configuration
+    Write-Info "Creating Windows service..."
+    $binPath = "`"$exePath`" --web.listen-address=:$Port"
+    
+    $result = sc.exe create $ServiceName binPath= $binPath start= auto displayname= "Prometheus Windows Exporter"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Failed to create service: $result"
+        return $false
+    }
+    
+    # Set description
+    sc.exe description $ServiceName "Prometheus exporter for Windows machines" | Out-Null
+    
+    # Set recovery options
+    sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/10000/restart/30000 | Out-Null
+    
+    Write-Success "Service created successfully"
+    
+    # Start the service
+    Write-Info "Starting service..."
+    Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 3
+    
+    $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($service -and $service.Status -eq "Running") {
+        Write-Success "Service is now running"
+        return $true
+    }
+    else {
+        Write-Warning "Service created but not running. Status: $($service.Status)"
+        Write-Host "Try running manually: & `"$exePath`"" -ForegroundColor Yellow
         return $false
     }
 }
@@ -332,19 +462,27 @@ function Remove-FirewallRule {
 function Uninstall-WindowsExporter {
     Write-Info "Uninstalling Windows Exporter..."
     
-    # Stop service
+    # Stop service first
     Stop-ExporterService
     
-    # Find and uninstall MSI
-    $product = Get-WmiObject -Class Win32_Product | Where-Object { $_.Name -like "*windows_exporter*" }
+    # Try to remove service directly (works for manual installations)
+    $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($service) {
+        Write-Info "Removing service..."
+        sc.exe delete $ServiceName | Out-Null
+        Start-Sleep -Seconds 2
+    }
+    
+    # Find and uninstall MSI if installed via MSI
+    $product = Get-WmiObject -Class Win32_Product -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*windows_exporter*" }
     
     if ($product) {
         Write-Info "Removing installed product: $($product.Name)"
         $product.Uninstall() | Out-Null
-        Write-Success "Windows Exporter uninstalled"
+        Write-Success "Windows Exporter MSI uninstalled"
     }
     else {
-        # Try alternative uninstall method
+        # Try alternative uninstall method via registry
         $uninstallKeys = @(
             "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
             "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
@@ -496,22 +634,51 @@ function Main {
         # Download
         $downloadResult = Get-WindowsExporter -Version $Version
         
-        # Install
+        # Install via MSI
         $installSuccess = Install-WindowsExporter -MsiPath $downloadResult.MsiPath -Port $Port -Collectors $Collectors
         
+        # Configure firewall (do this regardless)
+        Set-FirewallRule -Port $Port
+        
         if ($installSuccess) {
-            # Configure firewall
-            Set-FirewallRule -Port $Port
+            # Try to start the service
+            $serviceStarted = Start-ExporterService
             
-            # Verify installation
-            Test-Installation -Port $Port
+            if ($serviceStarted) {
+                # Verify installation
+                Test-Installation -Port $Port
+                
+                # Show summary
+                Write-Summary -Port $Port
+            }
+            else {
+                Write-Warning "Service did not start. The installation may need manual intervention."
+                Write-Host ""
+                Write-Host "Troubleshooting steps:" -ForegroundColor Yellow
+                Write-Host "  1. Check service status: Get-Service windows_exporter"
+                Write-Host "  2. Check for port conflicts: Get-NetTCPConnection -LocalPort $Port"
+                Write-Host "  3. Try starting manually: Start-Service windows_exporter"
+                Write-Host "  4. Check event log: Get-EventLog -LogName Application -Newest 20 | Where-Object {`$_.Source -like '*windows*'}"
+                Write-Host ""
+            }
+        }
+        else {
+            Write-Warning "MSI installation had issues. Attempting fallback installation..."
             
-            # Show summary
-            Write-Summary -Port $Port
+            # Try manual/exe-based installation as fallback
+            $manualSuccess = Install-ServiceManually
+            
+            if ($manualSuccess) {
+                Test-Installation -Port $Port
+                Write-Summary -Port $Port
+            }
+            else {
+                Write-Error "Installation failed. Please check the logs above for details."
+            }
         }
         
         # Cleanup
-        if (Test-Path $downloadResult.TempDir) {
+        if ($downloadResult.TempDir -and (Test-Path $downloadResult.TempDir)) {
             Remove-Item -Path $downloadResult.TempDir -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
